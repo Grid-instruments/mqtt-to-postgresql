@@ -1,0 +1,19 @@
+server:
+  port: 8080
+
+database:
+  dbname: test
+  dbuser: "dbuser"
+  dbpassword: "dbpassword"
+
+mqtt:
+  broker: "mqtt://localhost:1883"
+  port: 1883
+  username: "mqttuser"
+  clientId: "mqttclient"
+  password: "mqttpassword"
+  topic: "test"
+
+
+EXAMPLE_VAR: "variable from config.yml"
+EXAMPLE_PATH: "path from config.yml"
