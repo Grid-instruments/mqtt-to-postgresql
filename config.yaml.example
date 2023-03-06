@@ -7,12 +7,12 @@ database:
   dbpassword: "dbpassword"
 
 mqtt:
-  broker: "mqtt.gridinstruments.com"
+  broker: "mqtt://localhost:1883"
   port: 1883
   username: "mqttuser"
   clientId: "mqttclient"
   password: "mqttpassword"
-  topic: "ref/#"
+  topic: "test"
 
 
 EXAMPLE_VAR: "variable from config.yml"
