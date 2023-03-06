@@ -54,6 +54,10 @@ type DatabaseConfigurations struct {
 	DBName     string
 	DBUser     string
 	DBPassword string
+	DBHost     string
+	DBPort     string
+	DBTimezone string
+	DBSSLMode  string
 }
 
 type MqttConfigurations struct {

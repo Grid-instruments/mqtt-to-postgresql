@@ -2,9 +2,13 @@ server:
   port: 8080
 
 database:
-  dbname: test
-  dbuser: "dbuser"
-  dbpassword: "dbpassword"
+  dbhost: "localhost"
+  dbport: "5432"
+  dbname: "mydb"
+  dbuser: "test"
+  dbpassword: "1234567890"
+  dbtimezone: "UTC"
+  dbsslmode: "disable"
 
 mqtt:
   broker: "mqtt.gridinstruments.com"
@@ -12,7 +16,7 @@ mqtt:
   username: "mqttuser"
   clientId: "mqttclient"
   password: "mqttpassword"
-  topic: "ref/#"
+  topic: "dev/#"
 
 
 EXAMPLE_VAR: "variable from config.yml"
