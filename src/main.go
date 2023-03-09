@@ -7,6 +7,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -15,7 +16,10 @@ import (
 // Measurement gorm.Model definition
 type Measurement struct {
 	ID       uint `gorm:"primaryKey"`
+	NodeID   string
 	Phi      float64
+	Phi2     float64
+	Phi3     float64
 	Xm2      float64
 	Freq     float64
 	T        float64
@@ -23,6 +27,10 @@ type Measurement struct {
 	Report   int
 	Verified bool
 }
+
+var globalDb *gorm.DB
+
+var topic string
 
 var ch = make(chan Measurement)
 
@@ -34,13 +42,31 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 	payload := msg.Payload()
 	if strings.Compare(string(payload), "\n") > 0 {
 
-		fmt.Printf("TOPIC: %s\n", topic)
-		fmt.Printf("MSG: %s\n", payload)
 		msg := parseString(string(payload))
 		// If message is not empty
 		if msg != (Measurement{}) {
-			ch <- msg
-			fmt.Println("Message sent to channel")
+			fmt.Printf("TOPIC: %s\n", topic)
+			fmt.Printf("MSG: %s\n", payload)
+			// Split topic to get NodeID
+			parts := strings.Split(topic, "/")
+			if len(parts) < 3 {
+				panic("not enough slashes")
+			}
+			NodeID := parts[1]
+			msg.NodeID = NodeID
+
+			// Send message to channel
+			//select {
+			//case ch <- msg:
+			//default:
+			//	fmt.Println("Channel is full")
+			//}
+
+			// Insert message to database
+			err := insertMeasurement(globalDb, msg)
+			if err != nil {
+				return
+			}
 		}
 	}
 
@@ -52,7 +78,7 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 	fmt.Println("MQTT connected")
-	subscribe(client, "dev/#")
+	subscribe(client, topic)
 }
 
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
@@ -88,31 +114,46 @@ func unsubscribe(client mqtt.Client, topic string) {
 	fmt.Println("Unsubscribed from topic: ", topic)
 }
 
-func parseString(s string) Measurement {
+func parseString(input string) Measurement {
+	// Check if the input string contains "SinglePhaseReportData"
+	//if !strings.Contains(input, "SinglePhaseReportData") {
+	//	return Measurement{}
+	//}
+
+	index := strings.Index(input, "SinglePhaseReportData")
+	if index == -1 {
+		return Measurement{}
+	}
+
+	result := input[index+len("SinglePhaseReportData"):]
+
 	var phi, xm2, freq, t float64
 	var dt time.Time
 	var verified bool
 	var report int
 	var year, month, day, hour, minute, second int
 
-	//If message does not start with SinglePhaseReportData retun empty Measurement
-	if !strings.HasPrefix(s, "SinglePhaseReportData") {
-		return Measurement{}
-	}
-
-	_, err := fmt.Sscanf(s, "SinglePhaseReportData(phi: %f, xm2: %f, freq: %f, t: %f, dt: %d. %d. %d %d:%d:%d %d (verified: %t))",
+	_, err := fmt.Sscanf(result, "(phi: %f, xm2: %f, freq: %f, t: %f, dt: %d. %d. %d %d:%d:%d %d (verified: %t))",
 		&phi, &xm2, &freq, &t,
 		&year, &month, &day, &hour, &minute, &second,
 		&report, &verified)
 	if err != nil {
-		fmt.Println(err)
+		panic(err)
 	}
+	if verified != true {
+		return Measurement{}
+	}
+
+	dt = time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
 
 	switch report {
 	case 9, 19, 29, 39, 49:
-		dt = time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
+		phi2 := phi + (2 * math.Pi / 3)
+		phi3 := phi - (2 * math.Pi / 3)
 		return Measurement{
 			Phi:      phi,
+			Phi2:     phi2,
+			Phi3:     phi3,
 			Xm2:      xm2,
 			Freq:     freq,
 			T:        t,
@@ -127,12 +168,20 @@ func parseString(s string) Measurement {
 }
 
 func createTableIfNotExists(db *gorm.DB) error {
+	// Drop the measurements table using a raw SQL query
+	/*result := db.Exec("DROP TABLE IF EXISTS measurements")
+	if result.Error != nil {
+		panic(result.Error)
+	}
+	// Print a success message
+	fmt.Println("Table measurements has been dropped successfully!")*/
+
 	// Check if "measurements" table exists
-	tableExists := db.Migrator().HasTable("measurements")
+	/*tableExists := db.Migrator().HasTable("measurements")
 	if tableExists {
 		fmt.Println("Table 'measurements' already exists.")
 		return nil
-	}
+	}*/
 
 	// Create the "measurements" table
 	err := db.AutoMigrate(&Measurement{})
@@ -140,8 +189,8 @@ func createTableIfNotExists(db *gorm.DB) error {
 		fmt.Println("Error creating table 'measurements': ", err)
 		return err
 	}
-
 	fmt.Println("Table 'measurements' created successfully.")
+
 	return nil
 }
 
@@ -185,6 +234,8 @@ func main() {
 	// Read the configuration file
 	var configuration = c.ReadDB()
 
+	topic = configuration.Mqtt.Topic
+
 	fmt.Println("Trying to connect to database")
 	// Set up database connection
 	/*dsn := "host=" + configuration.Database.DBHost + " user=" + configuration.Database.DBUser +
@@ -193,7 +244,9 @@ func main() {
 	// Set-up database
 	dsn2 := "host=195.201.130.247 user=test password=a63Nd2i5KCm dbname=mydb port=5432 sslmode=disable TimeZone=UTC"
 	db, err := gorm.Open(postgres.Open(dsn2), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Error),
+		Logger:                 logger.Default.LogMode(logger.Error),
+		SkipDefaultTransaction: true,
+		PrepareStmt:            true,
 	})
 	if err != nil {
 		panic("failed to connect database")
@@ -207,13 +260,14 @@ func main() {
 	}
 	fmt.Println("Database created")
 
+	globalDb = db
 	fmt.Println("Starting go routine")
-	go func() {
-		err := insertMeasurementsChannel(db)
-		if err != nil {
-			panic(err)
-		}
-	}()
+	//go func() {
+	//	err := insertMeasurementsChannel(db)
+	//	if err != nil {
+	//		panic(err)
+	//	}
+	//}()
 
 	go func() {
 		err := deleteOldData(db)
