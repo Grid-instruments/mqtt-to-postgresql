@@ -45,8 +45,9 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 		msg := parseString(string(payload))
 		// If message is not empty
 		if msg != (Measurement{}) {
-			fmt.Printf("TOPIC: %s\n", topic)
-			fmt.Printf("MSG: %s\n", payload)
+			fmt.Printf("TOPIC: %s | MSG: %s \n", topic, payload)
+			//fmt.Printf("TOPIC: %s\n", topic)
+			//fmt.Printf("MSG: %s\n", payload)
 			// Split topic to get NodeID
 			parts := strings.Split(topic, "/")
 			if len(parts) < 3 {
@@ -83,19 +84,6 @@ var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
 	fmt.Printf("MQTT connect lost: %v\n", err)
-}
-
-var reconnectHandler mqtt.ReconnectHandler = func(client mqtt.Client, options *mqtt.ClientOptions) {
-	for {
-		if token := client.Connect(); token.Wait() && token.Error() != nil {
-			fmt.Println("Connection lost, reconnecting...")
-			time.Sleep(5 * time.Second)
-		} else {
-			// resubscribe to topics
-			subscribe(client, "dev/#")
-			break
-		}
-	}
 }
 
 func subscribe(client mqtt.Client, topic string) {
@@ -195,10 +183,14 @@ func createTableIfNotExists(db *gorm.DB) error {
 }
 
 func insertMeasurement(db *gorm.DB, measurement Measurement) error {
+	// Time how long it takes to insert a row
+	start := time.Now()
 	result := db.Create(&measurement)
 	if result.Error != nil {
 		return result.Error
 	}
+	elapsed := time.Since(start)
+	fmt.Printf("Inserted row in %s\n", elapsed)
 	return nil
 }
 
