@@ -1,0 +1,20 @@
+CREATE UNLOGGED TABLE measurements_read (
+    id SERIAL PRIMARY KEY,
+    node_id VARCHAR(255),
+    phi FLOAT,
+    phi2 FLOAT,
+    phi3 FLOAT,
+    xm2 FLOAT,
+    freq FLOAT,
+    t FLOAT,
+    dt TIMESTAMP,
+    report INT,
+    verified BOOLEAN
+);
+
+ALTER TABLE measurements_read SET (autovacuum_enabled=false);
+CREATE INDEX dt_node_id_index_report ON measurements_read (dt, node_id, report);
+
+
+CREATE TABLE measurements_insert_1() INHERITS (measurements_read);
+CREATE TABLE measurements_insert_2() INHERITS (measurements_read);

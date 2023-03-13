@@ -1,12 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	c "github.com/Grid-instruments/mqtt-to-postgresql/src/config"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	"github.com/jackc/pgx/v5"
 	"math"
 	"os"
 	"strings"
@@ -15,7 +14,7 @@ import (
 
 // Measurement gorm.Model definition
 type Measurement struct {
-	ID       uint `gorm:"primaryKey"`
+	ID       uint
 	NodeID   string
 	Phi      float64
 	Phi2     float64
@@ -28,7 +27,7 @@ type Measurement struct {
 	Verified bool
 }
 
-var globalDb *gorm.DB
+var globalDb *pgx.Conn
 
 var topic string
 
@@ -46,8 +45,6 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 		// If message is not empty
 		if msg != (Measurement{}) {
 			fmt.Printf("TOPIC: %s | MSG: %s \n", topic, payload)
-			//fmt.Printf("TOPIC: %s\n", topic)
-			//fmt.Printf("MSG: %s\n", payload)
 			// Split topic to get NodeID
 			parts := strings.Split(topic, "/")
 			if len(parts) < 3 {
@@ -155,67 +152,40 @@ func parseString(input string) Measurement {
 
 }
 
-func createTableIfNotExists(db *gorm.DB) error {
-	// Drop the measurements table using a raw SQL query
-	/*result := db.Exec("DROP TABLE IF EXISTS measurements")
-	if result.Error != nil {
-		panic(result.Error)
-	}
-	// Print a success message
-	fmt.Println("Table measurements has been dropped successfully!")*/
-
-	// Check if "measurements" table exists
-	/*tableExists := db.Migrator().HasTable("measurements")
-	if tableExists {
-		fmt.Println("Table 'measurements' already exists.")
-		return nil
-	}*/
-
-	// Create the "measurements" table
-	err := db.AutoMigrate(&Measurement{})
-	if err != nil {
-		fmt.Println("Error creating table 'measurements': ", err)
-		return err
-	}
-	fmt.Println("Table 'measurements' created successfully.")
-
-	return nil
-}
-
-func insertMeasurement(db *gorm.DB, measurement Measurement) error {
+func insertMeasurement(db *pgx.Conn, measurement Measurement) error {
 	// Time how long it takes to insert a row
 	start := time.Now()
-	result := db.Create(&measurement)
-	if result.Error != nil {
-		return result.Error
+
+	// Insert the measurement into the database
+	sql := "INSERT INTO measurements_insert_1 (node_id, phi, phi2, phi3, xm2, freq, t, dt, report, verified) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+	_, err := db.Exec(context.Background(), sql, measurement.NodeID, measurement.Phi, measurement.Phi2, measurement.Phi3, measurement.Xm2, measurement.Freq, measurement.T, measurement.Dt, measurement.Report, measurement.Verified)
+	if err != nil {
+		return err
 	}
+
 	elapsed := time.Since(start)
 	fmt.Printf("Inserted row in %s\n", elapsed)
 	return nil
 }
 
-func insertMeasurementsChannel(db *gorm.DB) error {
-	for msg := range ch {
-		result := db.Create(&msg)
-		if result.Error != nil {
-			return result.Error
-		}
-	}
-	return nil
-}
-
-func deleteOldData(db *gorm.DB) error {
+func deleteOldData(db *pgx.Conn) error {
 	ticker := time.NewTicker(5 * time.Minute)
 
 	for range ticker.C {
-		// Compute the timestamp 5 minutes ago
-		fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
-
-		// Delete rows older than the computed timestamp
-		result := db.Where("dt < ?", fiveMinutesAgo).Delete(&Measurement{})
-		if result.Error != nil {
-			return result.Error
+		// Execute the SQL statement
+		_, err := db.Exec(context.Background(), `
+		TRUNCATE TABLE child_2;
+		BEGIN;
+		ALTER TABLE child_1 RENAME TO child_tmp;
+		ALTER TABLE child_2 RENAME TO child_1;
+		ALTER TABLE child_tmp RENAME TO child_2;
+		COMMIT;
+		`)
+		if err != nil {
+			panic(err)
 		}
+
+		fmt.Println("Table renamed successfully!")
 		fmt.Println("Deleted rows older than 5 minutes")
 	}
 
@@ -234,35 +204,30 @@ func main() {
 	" password=" + configuration.Database.DBPassword + " dbname=" + configuration.Database.DBName +
 	" port=" + configuration.Database.DBPort + " sslmode=" + configuration.Database.DBSSLMode + " TimeZone=" + configuration.Database.DBTimezone*/
 	// Set-up database
-	dsn2 := "host=195.201.130.247 user=test password=a63Nd2i5KCm dbname=mydb port=5432 sslmode=disable TimeZone=UTC"
-	db, err := gorm.Open(postgres.Open(dsn2), &gorm.Config{
-		Logger:                 logger.Default.LogMode(logger.Error),
-		SkipDefaultTransaction: true,
-		PrepareStmt:            true,
-	})
+	databaseUrl := "postgres://test:a63Nd2i5KCm@195.201.130.247:5432/mydb"
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseUrl)
 	if err != nil {
 		panic("failed to connect database")
 	}
 	fmt.Println("Database connected")
 
-	// Create the "measurements" table if it doesn't exist
-	err = createTableIfNotExists(db)
+	// Chech if the table measurements_insert_1 exists
+	// Check if the table exists
+	var exists bool
+	err = conn.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)", "measurements_insert_1").Scan(&exists)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("Database created")
+	if !exists {
+		panic("Table measurements_insert_1 does not exist")
+	}
 
-	globalDb = db
+	globalDb = conn
+
 	fmt.Println("Starting go routine")
-	//go func() {
-	//	err := insertMeasurementsChannel(db)
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//}()
-
 	go func() {
-		err := deleteOldData(db)
+		err := deleteOldData(conn)
 		if err != nil {
 			panic(err)
 		}
@@ -275,9 +240,10 @@ func main() {
 	var broker = configuration.Mqtt.Broker
 	var port = configuration.Mqtt.Port
 	fmt.Printf("Connecting to: tcp://%s:%d\n", broker, port)
+	// Generate a random client ID
 	client := mqtt.NewClient(mqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", broker, port)).
-		SetClientID("go-simple").
+		SetClientID("go-simple2").
 		SetDefaultPublishHandler(messagePubHandler).
 		SetOnConnectHandler(connectHandler).
 		SetConnectionLostHandler(connectLostHandler).
@@ -294,6 +260,10 @@ func main() {
 		os.Exit(1)
 	}*/
 
+	//--------------------------------------------------------------
+	//							Shutdown
+	//--------------------------------------------------------------
+
 	for flag == false {
 		time.Sleep(1 * time.Second)
 	}
@@ -304,5 +274,9 @@ func main() {
 	}
 	close(ch)
 
+	err = conn.Close(ctx)
+	if err != nil {
+		return
+	}
 	//client.Disconnect(250)
 }
